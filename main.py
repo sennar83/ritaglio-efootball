@@ -4,8 +4,24 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from PIL import Image
 
+from rembg import remove, new_session
+
 
 app = FastAPI()
+
+
+# ============================================================
+# CARICAMENTO MODELLO
+# ============================================================
+
+print("========================================")
+print("Caricamento modello BiRefNet...")
+print("========================================")
+
+session = new_session("birefnet-general")
+
+
+print("Modello BiRefNet caricato correttamente.")
 
 
 # ============================================================
@@ -21,7 +37,8 @@ def home():
 
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1.0">
 
         <title>Ritaglio eFootball</title>
 
@@ -131,42 +148,76 @@ def home():
 
             async function ritaglia() {
 
-                const fileInput = document.getElementById("file");
-                const button = document.getElementById("button");
-                const status = document.getElementById("status");
-                const result = document.getElementById("result");
+                const fileInput =
+                    document.getElementById("file");
+
+                const button =
+                    document.getElementById("button");
+
+                const status =
+                    document.getElementById("status");
+
+                const result =
+                    document.getElementById("result");
+
 
                 if (!fileInput.files.length) {
-                    status.innerHTML = "Seleziona prima un'immagine.";
+
+                    status.innerHTML =
+                        "Seleziona prima un'immagine.";
+
                     return;
                 }
+
 
                 const file = fileInput.files[0];
 
                 const formData = new FormData();
+
                 formData.append("file", file);
 
+
                 button.disabled = true;
-                status.innerHTML = "Elaborazione in corso...";
+
+                status.innerHTML =
+                    "Rimozione dello sfondo in corso...";
+
                 result.innerHTML = "";
+
 
                 try {
 
-                    const response = await fetch("/ritaglia", {
-                        method: "POST",
-                        body: formData
-                    });
+                    const response = await fetch(
+                        "/ritaglia",
+                        {
+                            method: "POST",
+                            body: formData
+                        }
+                    );
+
 
                     if (!response.ok) {
-                        throw new Error("Errore del server");
+
+                        const text =
+                            await response.text();
+
+                        throw new Error(text);
                     }
 
-                    const blob = await response.blob();
 
-                    const url = URL.createObjectURL(blob);
+                    const blob =
+                        await response.blob();
+
+
+                    const url =
+                        URL.createObjectURL(blob);
+
 
                     result.innerHTML = `
-                        <p>Ritaglio completato!</p>
+
+                        <p>
+                            Elaborazione completata!
+                        </p>
 
                         <img
                             id="preview"
@@ -182,9 +233,12 @@ def home():
                         >
                             SCARICA PNG
                         </a>
+
                     `;
 
+
                     status.innerHTML = "";
+
 
                 } catch (error) {
 
@@ -210,30 +264,50 @@ def home():
 
 
 # ============================================================
-# API RITAGLIO
+# RITAGLIO + RIMOZIONE SFONDO
 # ============================================================
 
 @app.post("/ritaglia")
 async def ritaglia(file: UploadFile = File(...)):
 
-    # Legge il file ricevuto
+    # --------------------------------------------------------
+    # LETTURA IMMAGINE
+    # --------------------------------------------------------
+
     contenuto = await file.read()
 
-    # Apre l'immagine
-    immagine = Image.open(BytesIO(contenuto))
+    immagine = Image.open(
+        BytesIO(contenuto)
+    ).convert("RGBA")
 
-    # Converte in RGBA
-    immagine = immagine.convert("RGBA")
 
-    # ========================================================
-    # CROP DI PROVA
-    # ========================================================
+    # --------------------------------------------------------
+    # RIMOZIONE SFONDO
+    # --------------------------------------------------------
 
-    crop = immagine.crop((60, 60, 420, 430))
+    print(
+        f"Elaborazione immagine: "
+        f"{immagine.width}x{immagine.height}"
+    )
 
-    # ========================================================
+    risultato = remove(
+        immagine,
+        session=session
+    )
+
+
+    # --------------------------------------------------------
+    # CROP
+    # --------------------------------------------------------
+
+    crop = risultato.crop(
+        (60, 60, 420, 430)
+    )
+
+
+    # --------------------------------------------------------
     # OUTPUT PNG
-    # ========================================================
+    # --------------------------------------------------------
 
     output = BytesIO()
 
@@ -241,6 +315,7 @@ async def ritaglia(file: UploadFile = File(...)):
         output,
         format="PNG"
     )
+
 
     return Response(
         content=output.getvalue(),
