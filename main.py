@@ -1,547 +1,321 @@
-from io import BytesIO
-
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import Response
 from PIL import Image
-
 from rembg import remove, new_session
-
-
-app = FastAPI()
+from io import BytesIO
+import asyncio
+import threading
 
 
 # ============================================================
-# SESSIONE MODELLO
+# CONFIGURAZIONE
 # ============================================================
 
-# Il modello NON viene caricato all'avvio.
-# Verrà caricato solamente quando arriva la prima immagine.
+app = FastAPI(
+    title="Ritaglio eFootball",
+    description="Ritaglio automatico immagini giocatori eFootball",
+    version="1.0"
+)
+
+
+# ============================================================
+# COORDINATE RITAGLIO
+# ============================================================
+
+X1 = 60
+Y1 = 70
+X2 = 400
+Y2 = 430
+
+
+# ============================================================
+# MODELLO
+# ============================================================
+
+MODEL_NAME = "birefnet-general"
 
 session = None
 
+model_ready = False
+model_error = None
 
-# ============================================================
-# PAGINA WEB
-# ============================================================
-
-@app.get("/", response_class=HTMLResponse)
-def home():
-
-    return """
-    <!DOCTYPE html>
-    <html lang="it">
-
-    <head>
-
-        <meta charset="UTF-8">
-
-        <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1.0"
-        >
-
-        <title>Ritaglio eFootball</title>
-
-        <style>
-
-            * {
-                box-sizing: border-box;
-            }
-
-            body {
-
-                margin: 0;
-
-                padding: 20px;
-
-                background: #f2f2f2;
-
-                font-family: Arial, sans-serif;
-
-                text-align: center;
-            }
-
-
-            .container {
-
-                max-width: 500px;
-
-                margin: 0 auto;
-
-                background: white;
-
-                padding: 25px;
-
-                border-radius: 15px;
-
-                box-shadow:
-                    0 3px 15px
-                    rgba(0,0,0,0.15);
-            }
-
-
-            h1 {
-
-                margin-top: 0;
-            }
-
-
-            input[type="file"] {
-
-                width: 100%;
-
-                margin: 20px 0;
-
-                padding: 12px;
-            }
-
-
-            button {
-
-                width: 100%;
-
-                padding: 15px;
-
-                border: none;
-
-                border-radius: 10px;
-
-                background: #222;
-
-                color: white;
-
-                font-size: 18px;
-
-                cursor: pointer;
-            }
-
-
-            button:disabled {
-
-                background: #999;
-            }
-
-
-            #status {
-
-                margin-top: 20px;
-
-                font-size: 16px;
-            }
-
-
-            #result {
-
-                margin-top: 20px;
-            }
-
-
-            #preview {
-
-                max-width: 100%;
-
-                margin-top: 15px;
-
-                border-radius: 10px;
-            }
-
-
-            .download {
-
-                display: inline-block;
-
-                margin-top: 15px;
-
-                padding: 12px 20px;
-
-                background: #198754;
-
-                color: white;
-
-                text-decoration: none;
-
-                border-radius: 8px;
-            }
-
-        </style>
-
-    </head>
-
-
-    <body>
-
-
-        <div class="container">
-
-
-            <h1>
-                Ritaglio eFootball
-            </h1>
-
-
-            <p>
-                Seleziona un'immagine del giocatore.
-            </p>
-
-
-            <input
-                type="file"
-                id="file"
-                accept="image/png,image/jpeg,image/webp"
-            >
-
-
-            <button
-                id="button"
-                onclick="ritaglia()"
-            >
-                RITAGLIA
-            </button>
-
-
-            <div id="status"></div>
-
-
-            <div id="result"></div>
-
-
-        </div>
-
-
-        <script>
-
-
-            async function ritaglia() {
-
-
-                const fileInput =
-                    document.getElementById("file");
-
-
-                const button =
-                    document.getElementById("button");
-
-
-                const status =
-                    document.getElementById("status");
-
-
-                const result =
-                    document.getElementById("result");
-
-
-                // ------------------------------------------------
-                // CONTROLLO FILE
-                // ------------------------------------------------
-
-                if (!fileInput.files.length) {
-
-                    status.innerHTML =
-                        "Seleziona prima un'immagine.";
-
-                    return;
-                }
-
-
-                const file =
-                    fileInput.files[0];
-
-
-                // ------------------------------------------------
-                // PREPARAZIONE UPLOAD
-                // ------------------------------------------------
-
-                const formData =
-                    new FormData();
-
-
-                formData.append(
-                    "file",
-                    file
-                );
-
-
-                // ------------------------------------------------
-                // BLOCCA PULSANTE
-                // ------------------------------------------------
-
-                button.disabled = true;
-
-
-                status.innerHTML =
-                    "Rimozione dello sfondo in corso...";
-
-
-                result.innerHTML = "";
-
-
-                try {
-
-
-                    // --------------------------------------------
-                    // INVIO AL SERVER
-                    // --------------------------------------------
-
-                    const response =
-                        await fetch(
-                            "/ritaglia",
-                            {
-                                method: "POST",
-                                body: formData
-                            }
-                        );
-
-
-                    // --------------------------------------------
-                    // CONTROLLO RISPOSTA
-                    // --------------------------------------------
-
-                    if (!response.ok) {
-
-                        const text =
-                            await response.text();
-
-                        throw new Error(text);
-                    }
-
-
-                    // --------------------------------------------
-                    // RICEVE PNG
-                    // --------------------------------------------
-
-                    const blob =
-                        await response.blob();
-
-
-                    const url =
-                        URL.createObjectURL(
-                            blob
-                        );
-
-
-                    // --------------------------------------------
-                    // MOSTRA RISULTATO
-                    // --------------------------------------------
-
-                    result.innerHTML = `
-
-                        <p>
-                            Elaborazione completata!
-                        </p>
-
-                        <img
-                            id="preview"
-                            src="${url}"
-                        >
-
-                        <br>
-
-                        <a
-                            class="download"
-                            href="${url}"
-                            download="ritaglio.png"
-                        >
-                            SCARICA PNG
-                        </a>
-
-                    `;
-
-
-                    status.innerHTML = "";
-
-
-                }
-
-
-                catch (error) {
-
-
-                    console.error(error);
-
-
-                    status.innerHTML =
-                        "Errore durante l'elaborazione.";
-
-
-                    result.innerHTML = `
-                        <p>
-                            ${error.message}
-                        </p>
-                    `;
-
-
-                }
-
-
-                finally {
-
-
-                    button.disabled = false;
-
-
-                }
-
-            }
-
-
-        </script>
-
-
-    </body>
-
-    </html>
-    """
+model_lock = threading.Lock()
 
 
 # ============================================================
-# RITAGLIO + RIMOZIONE SFONDO
+# CARICAMENTO MODELLO
+# ============================================================
+
+def load_model():
+    global session
+    global model_ready
+    global model_error
+
+    try:
+        print("=" * 40)
+        print("Caricamento modello BiRefNet...")
+        print("=" * 40)
+
+        session = new_session(MODEL_NAME)
+
+        model_ready = True
+
+        print("=" * 40)
+        print("MODELLO BIREfNET CARICATO CORRETTAMENTE")
+        print("=" * 40)
+
+    except Exception as e:
+
+        model_error = str(e)
+
+        print("=" * 40)
+        print("ERRORE CARICAMENTO MODELLO")
+        print("=" * 40)
+        print(e)
+
+
+# ============================================================
+# AVVIO
+# ============================================================
+
+@app.on_event("startup")
+async def startup_event():
+
+    print("=" * 50)
+    print("SERVER RITAGLIO EFOOTBALL AVVIATO")
+    print("=" * 50)
+
+    # Carica il modello in un thread separato.
+    # In questo modo FastAPI può aprire immediatamente
+    # la porta richiesta da Render.
+
+    loop = asyncio.get_running_loop()
+
+    loop.run_in_executor(
+        None,
+        load_model
+    )
+
+
+# ============================================================
+# HOME
+# ============================================================
+
+@app.get("/")
+async def home():
+
+    if model_ready:
+
+        return {
+            "status": "online",
+            "model": "BiRefNet",
+            "model_ready": True,
+            "message": "Servizio pronto"
+        }
+
+    if model_error:
+
+        return {
+            "status": "error",
+            "model_ready": False,
+            "error": model_error
+        }
+
+    return {
+        "status": "starting",
+        "model": "BiRefNet",
+        "model_ready": False,
+        "message": "Il modello è ancora in caricamento"
+    }
+
+
+# ============================================================
+# STATO SERVER
+# ============================================================
+
+@app.get("/status")
+async def status():
+
+    return {
+        "server": "online",
+        "model_ready": model_ready,
+        "model_error": model_error
+    }
+
+
+# ============================================================
+# RITAGLIO
 # ============================================================
 
 @app.post("/ritaglia")
-async def ritaglia(
-    file: UploadFile = File(...)
-):
+async def ritaglia(file: UploadFile = File(...)):
+
+    # --------------------------------------------------------
+    # CONTROLLO MODELLO
+    # --------------------------------------------------------
+
+    if not model_ready:
+
+        if model_error:
+
+            raise HTTPException(
+                status_code=500,
+                detail=f"Errore caricamento modello: {model_error}"
+            )
+
+        raise HTTPException(
+            status_code=503,
+            detail="Il modello BiRefNet è ancora in caricamento. Riprova tra qualche secondo."
+        )
 
 
-    # ========================================================
+    # --------------------------------------------------------
+    # CONTROLLO FILE
+    # --------------------------------------------------------
+
+    if not file.content_type:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Tipo di file non riconosciuto"
+        )
+
+
+    if not file.content_type.startswith("image/"):
+
+        raise HTTPException(
+            status_code=400,
+            detail="Il file deve essere un'immagine"
+        )
+
+
+    # --------------------------------------------------------
     # LETTURA IMMAGINE
-    # ========================================================
+    # --------------------------------------------------------
 
-    contenuto = await file.read()
+    try:
 
+        data = await file.read()
 
-    immagine = Image.open(
-        BytesIO(contenuto)
-    ).convert("RGBA")
+        if not data:
 
+            raise HTTPException(
+                status_code=400,
+                detail="File vuoto"
+            )
 
-    print(
-        f"Immagine ricevuta: "
-        f"{immagine.width}x{immagine.height}",
-        flush=True
-    )
+        image = Image.open(
+            BytesIO(data)
+        )
 
+        image.load()
 
-    # ========================================================
-    # CARICAMENTO MODELLO AL PRIMO UTILIZZO
-    # ========================================================
+    except Exception as e:
 
-    global session
-
-
-    if session is None:
-
-
-        print(
-            "========================================",
-            flush=True
+        raise HTTPException(
+            status_code=400,
+            detail=f"Impossibile leggere l'immagine: {e}"
         )
 
 
-        print(
-            "Caricamento modello BiRefNet...",
-            flush=True
-        )
+    # --------------------------------------------------------
+    # CONVERSIONE RGBA
+    # --------------------------------------------------------
+
+    image = image.convert("RGBA")
 
 
-        print(
-            "========================================",
-            flush=True
-        )
-
-
-        session = new_session(
-            "birefnet-general"
-        )
-
-
-        print(
-            "Modello BiRefNet caricato correttamente.",
-            flush=True
-        )
-
-
-    # ========================================================
+    # --------------------------------------------------------
     # RIMOZIONE SFONDO
-    # ========================================================
+    # --------------------------------------------------------
 
-    print(
-        "Rimozione dello sfondo...",
-        flush=True
-    )
+    try:
 
+        print(
+            f"Elaborazione immagine: "
+            f"{image.width}x{image.height}"
+        )
 
-    risultato = remove(
-        immagine,
-        session=session
-    )
+        result = remove(
+            image,
+            session=session
+        )
 
+    except Exception as e:
 
-    print(
-        "Rimozione sfondo completata.",
-        flush=True
-    )
+        print(
+            f"Errore rimozione sfondo: {e}"
+        )
 
-
-    # ========================================================
-    # CROP
-    # ========================================================
-
-    X1 = 60
-    Y1 = 60
-    X2 = 420
-    Y2 = 430
+        raise HTTPException(
+            status_code=500,
+            detail=f"Errore durante la rimozione dello sfondo: {e}"
+        )
 
 
-    crop = risultato.crop(
+    # --------------------------------------------------------
+    # RITAGLIO
+    # --------------------------------------------------------
+
+    width, height = result.size
+
+    # Controllo coordinate
+    crop_x1 = max(0, min(X1, width))
+    crop_y1 = max(0, min(Y1, height))
+    crop_x2 = max(0, min(X2, width))
+    crop_y2 = max(0, min(Y2, height))
+
+    if crop_x2 <= crop_x1 or crop_y2 <= crop_y1:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Coordinate ritaglio non valide per "
+                f"immagine {width}x{height}"
+            )
+        )
+
+
+    cropped = result.crop(
         (
-            X1,
-            Y1,
-            X2,
-            Y2
+            crop_x1,
+            crop_y1,
+            crop_x2,
+            crop_y2
         )
     )
 
 
-    print(
-        f"Crop eseguito: "
-        f"{X1},{Y1} -> {X2},{Y2}",
-        flush=True
-    )
-
-
-    # ========================================================
+    # --------------------------------------------------------
     # OUTPUT PNG
-    # ========================================================
+    # --------------------------------------------------------
 
     output = BytesIO()
 
-
-    crop.save(
+    cropped.save(
         output,
-        format="PNG"
+        format="PNG",
+        optimize=True
     )
+
+    output.seek(0)
 
 
     print(
-        "PNG creato.",
-        flush=True
+        f"Ritaglio completato: "
+        f"{cropped.width}x{cropped.height}"
     )
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # RISPOSTA
-    # ========================================================
+    # --------------------------------------------------------
 
     return Response(
-
         content=output.getvalue(),
-
         media_type="image/png",
-
         headers={
             "Content-Disposition":
-                "attachment; filename=ritaglio.png"
+                'attachment; filename="ritaglio.png"'
         }
-
-    )
+)
